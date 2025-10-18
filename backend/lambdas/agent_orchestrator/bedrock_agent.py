@@ -219,10 +219,51 @@ class BedrockAgent:
         github_token = self._get_github_token()
         
         file_contents = {}
-        # Only fetch key files that commonly need accessibility fixes (CSS, main pages, components)
-        # Prioritize smaller files to avoid token limits
-        priority_patterns = ['globals.css', 'page.tsx', 'layout.tsx', 'index.tsx', 'App.tsx', 'index.html']
-        web_files = [f for f in files if any(pattern in f for pattern in priority_patterns)][:5]
+        
+        # Smart file selection based on issues and framework
+        # 1. Extract file paths mentioned in issues (selectors often contain filenames)
+        files_mentioned_in_issues = set()
+        for issue in issues[:20]:  # Check top 20 issues
+            selector = issue.get('selector', '')
+            # Try to infer component names from selectors
+            if '.' in selector or '#' in selector:
+                # Extract potential component/class names that might map to files
+                parts = selector.replace('.', ' ').replace('#', ' ').split()
+                for part in parts:
+                    if part and len(part) > 2:
+                        files_mentioned_in_issues.add(part)
+        
+        # 2. Priority patterns based on framework
+        if framework == "nextjs":
+            priority_patterns = ['app/page.tsx', 'app/layout.tsx', 'app/globals.css', 'components/', 'app/']
+        elif framework == "react":
+            priority_patterns = ['App.tsx', 'App.jsx', 'index.tsx', 'index.jsx', 'components/', 'src/']
+        else:
+            priority_patterns = ['index.html', 'main.css', 'style.css', 'app.js']
+        
+        # 3. Find matching files (prioritize smaller files for better context)
+        candidate_files = []
+        for file_path in files:
+            # Check if file matches priority patterns or issue mentions
+            priority_score = 0
+            for pattern in priority_patterns:
+                if pattern in file_path:
+                    priority_score += 10
+            
+            # Boost score if filename contains words from issues
+            file_name = file_path.split('/')[-1].lower()
+            for mentioned in files_mentioned_in_issues:
+                if mentioned.lower() in file_name:
+                    priority_score += 5
+            
+            if priority_score > 0:
+                candidate_files.append((file_path, priority_score))
+        
+        # Sort by priority and fetch top files
+        candidate_files.sort(key=lambda x: x[1], reverse=True)
+        web_files = [f[0] for f in candidate_files[:10]]  # Fetch top 10 files
+        
+        logger.info(f"Prioritized files to fetch: {web_files}")
         
         for file_path in web_files:
             try:
@@ -235,37 +276,54 @@ class BedrockAgent:
                 if response.status_code == 200:
                     import base64
                     content = base64.b64decode(response.json()["content"]).decode("utf-8")
-                    # Only include files under 3000 chars (to keep prompt manageable)
-                    if len(content) < 3000:
-                        file_contents[file_path] = content  # Full content for small files
+                    # Include files up to 5000 chars for better context
+                    if len(content) < 5000:
+                        file_contents[file_path] = content
+                        logger.info(f"Fetched {file_path} ({len(content)} chars)")
                     else:
-                        logger.info(f"Skipping {file_path} - too large ({len(content)} chars)")
+                        # For large files, include first 4000 chars with a note
+                        file_contents[file_path] = content[:4000] + "\n\n// ... (file truncated for context)"
+                        logger.info(f"Fetched {file_path} (truncated from {len(content)} chars)")
             except Exception as e:
                 logger.warning(f"Could not fetch {file_path}: {e}")
         
         logger.info(f"Fetched {len(file_contents)} file contents for AI analysis")
         
-        # Format repo context with FULL file contents (not truncated)
+        # Format repo context with complete file contents
         files_info = "\n\n".join([
-            f"**File: {path}** ({len(content)} chars)\n```\n{content}\n```" 
+            f"**File: {path}**\n```{path.split('.')[-1]}\n{content}\n```" 
             for path, content in file_contents.items()
         ])
         
-        repo_context = f"""**Repository URL:** {repo_url}
-**Framework:** {framework.upper()}
-**Structure:** {structure}
-**Files available:** {', '.join(files)}
+        # Create detailed issue descriptions with context
+        issues_detailed = []
+        for issue in issues[:15]:  # Top 15 most critical issues
+            issues_detailed.append({
+                "rule": issue.get("rule", "unknown"),
+                "description": issue.get("description", ""),
+                "impact": issue.get("impact", "moderate"),
+                "selector": issue.get("selector", ""),
+                "help": issue.get("help", ""),
+                "helpUrl": issue.get("helpUrl", ""),
+                "wcag": issue.get("wcag", [])
+            })
+        
+        repo_context = f"""**Repository Information:**
+- URL: {repo_url}
+- Framework: {framework.upper()}
+- Structure: {structure}
 
-**Current file contents (first 1000 chars of each):**
+**Files Analyzed (showing {len(file_contents)} of {len(files)} total files):**
 {files_info}"""
         
         prompt = PATCH_GENERATION_PROMPT.replace(
             "{repo_url}", repo_context
         ).replace(
-            "{prioritized_issues}", json.dumps(issues[:10], indent=2)
+            "{prioritized_issues}", json.dumps(issues_detailed, indent=2)
         )
         
-        response = self._invoke_bedrock(prompt, max_tokens=8000)  # Increased for full files
+        # Use higher token limit for complete file generation
+        response = self._invoke_bedrock(prompt, max_tokens=16000, temperature=0.1)  # Lower temp for more precise code
         
         # Log the response for debugging
         logger.info(f"Bedrock patch response (first 1000 chars): {response[:1000]}")
@@ -287,13 +345,13 @@ class BedrockAgent:
             }
     
     def _extract_patches_from_response(self, response: str) -> List[Dict[str, str]]:
-        """Extract structured patches from LLM response - handles JSON or diff format"""
+        """Extract complete file contents from LLM response"""
         patches = []
         import re
         
-        logger.info(f"Extracting patches from response of length: {len(response)}")
+        logger.info(f"Extracting file contents from response of length: {len(response)}")
         
-        # Try to extract JSON array (look for proper JSON structure)
+        # Try to extract JSON array with complete file contents
         try:
             # Look for JSON code blocks first
             json_code_blocks = re.findall(r'```json\n(.*?)```', response, re.DOTALL)
@@ -301,50 +359,35 @@ class BedrockAgent:
                 try:
                     patches_json = json.loads(json_str)
                     if isinstance(patches_json, list) and len(patches_json) > 0:
-                        logger.info(f"Found {len(patches_json)} patches in JSON code block")
-                        return patches_json
-                except:
+                        # Validate it has the expected format (file_path and content)
+                        if all('file_path' in p and 'content' in p for p in patches_json):
+                            logger.info(f"Found {len(patches_json)} complete files in JSON code block")
+                            return patches_json
+                except Exception as e:
+                    logger.debug(f"Failed to parse JSON block: {e}")
                     continue
             
-            # Try to find JSON array in response (more careful regex)
-            json_array_match = re.search(r'\[\s*\{[^}]*"file_path"[^}]*"patch"[^\]]*\]\s*', response, re.DOTALL)
+            # Try to find JSON array directly in response
+            json_array_match = re.search(r'\[\s*\{[^}]*"file_path"[^}]*"content"[^\]]*\]', response, re.DOTALL)
             if json_array_match:
-                patches_json = json.loads(json_array_match.group())
-                if isinstance(patches_json, list):
-                    logger.info(f"Found {len(patches_json)} patches in JSON array")
-                    return patches_json
+                try:
+                    patches_json = json.loads(json_array_match.group())
+                    if isinstance(patches_json, list) and len(patches_json) > 0:
+                        logger.info(f"Found {len(patches_json)} complete files in JSON array")
+                        return patches_json
+                except Exception as e:
+                    logger.debug(f"Failed to parse JSON array: {e}")
         except Exception as e:
             logger.info(f"No valid JSON found: {str(e)[:100]}")
         
-        # Fall back to extracting diff blocks
-        if "```diff" in response or "```patch" in response:
-            patch_blocks = re.findall(r'```(?:diff|patch)\n(.*?)```', response, re.DOTALL)
-            logger.info(f"Found {len(patch_blocks)} diff blocks")
-            
-            for i, patch_content in enumerate(patch_blocks):
-                file_match = re.search(r'---\s+a/(.*?)\n', patch_content)
-                if file_match:
-                    file_path = file_match.group(1)
-                else:
-                    # Try to guess from context or use default
-                    file_path = "index.html"
-                
-                patches.append({
-                    "file_path": file_path,
-                    "patch": patch_content
-                })
-        
+        # If no valid patches found, log the response for debugging
         if not patches:
-            logger.warning("No patches extracted from response - using mock patches for testing")
-            # Return mock patches for testing
-            patches = [
-                {
-                    "file_path": "index.html",
-                    "patch": "Mock patch: Add alt text to images"
-                }
-            ]
+            logger.warning("No complete files extracted from response")
+            logger.info(f"Response preview (first 1000 chars): {response[:1000]}")
+            # Don't return mock patches - let Fargate handle it
+            return []
         
-        logger.info(f"Returning {len(patches)} patches")
+        logger.info(f"Returning {len(patches)} complete file contents")
         return patches
     
     def reason(self, context: Dict[str, Any]) -> str:
