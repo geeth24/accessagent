@@ -4,19 +4,10 @@ applications:
       phases:
         preBuild:
           commands:
-            - echo "Current directory:"
-            - pwd
-            - echo "Listing files:"
-            - ls -la
-            - echo "Installing pnpm:"
-            - npm install -g pnpm
-            - echo "Installing dependencies:"
-            - pnpm install
+            - corepack enable
+            - pnpm install --frozen-lockfile
         build:
           commands:
-            - echo "Building application:"
-            - echo "NODE_PATH=$PWD/node_modules"
-            - export NODE_PATH=$PWD/node_modules
             - pnpm run build
       artifacts:
         baseDirectory: .next
