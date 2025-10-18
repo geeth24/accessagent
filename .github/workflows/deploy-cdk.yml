@@ -1,0 +1,66 @@
+name: Deploy CDK Stack
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'cdk/**'
+      - 'backend/**'
+      - '.github/workflows/deploy-cdk.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Install CDK dependencies
+        run: |
+          cd cdk
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install AWS CDK CLI
+        run: npm install -g aws-cdk
+
+      - name: CDK Diff
+        run: |
+          cd cdk
+          cdk diff
+
+      - name: Deploy CDK Stack
+        run: |
+          cd cdk
+          cdk deploy --all --require-approval never
+
+      - name: Output deployment info
+        run: |
+          cd cdk
+          cdk ls
+
