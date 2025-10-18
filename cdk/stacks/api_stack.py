@@ -57,7 +57,7 @@ class ApiStack(Stack):
         certificate = acm.Certificate.from_certificate_arn(
             self,
             "ApiCertificate",
-            certificate_arn="arn:aws:acm:us-east-1:081762640508:certificate/ace8e5b5-1775-476b-924a-8cb5ea47b524"
+            certificate_arn="arn:aws:acm:us-east-1:081762640508:certificate/ace8e5b5-1775-476b-924a-8cb5ea47b524",
         )
 
         # Add custom domain to API Gateway
