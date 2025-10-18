@@ -32,7 +32,7 @@ class AgenticFixer:
         self.issues = issues
         self.bedrock_client = bedrock_client or boto3.client('bedrock-runtime', region_name='us-east-1')
         self.max_iterations = 5
-        self.model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"  # Claude 3.5 Sonnet v2 with tool use
+        self.model_id = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"  # Inference profile for Claude 3.5 Sonnet v2
         self.mcp_explorer = MCPCodebaseExplorer(str(repo_path))
 
     def get_codebase_context(self, max_files=30, max_size=5000) -> str:

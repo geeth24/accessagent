@@ -12,6 +12,7 @@ import boto3
 import subprocess
 import logging
 from datetime import datetime
+from agentcore_fixer import AgentCoreFixer
 from agentic_fixer import AgenticFixer
 
 # Configure logging
@@ -206,16 +207,16 @@ def main():
         update_progress("processing", "Cloning repository with full code access...", 55)
         repo_dir, owner, repo = clone_repo(repo_url, github_token)
         
-        # 🚀 NEW: Initialize Agentic Fixer
-        update_progress("processing", "AI analyzing full codebase...", 60)
-        fixer = AgenticFixer(
+        # 🚀 NEW: Initialize AgentCore Fixer (using Bedrock AgentCore primitives)
+        update_progress("processing", "AgentCore analyzing codebase with code interpreter...", 60)
+        fixer = AgentCoreFixer(
             repo_path=repo_dir,
             issues=issues,
             bedrock_client=bedrock
         )
         
-        # Run the agentic fix loop
-        update_progress("processing", "AI making fixes iteratively...", 70)
+        # Run the AgentCore fix loop
+        update_progress("processing", "AgentCore making fixes with code interpreter primitive...", 70)
         result = fixer.run_fix_loop()
         
         if not result['success']:
