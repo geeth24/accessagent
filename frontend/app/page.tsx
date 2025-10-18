@@ -22,6 +22,7 @@ import {
   Sparkles
 } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { GitHubRepoPicker } from "@/components/github-repo-picker";
 import { toast } from "sonner";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://your-api-gateway-url.execute-api.us-east-1.amazonaws.com/prod";
@@ -72,6 +73,7 @@ export default function Home() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [projectData, setProjectData] = useState<ProjectData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [useRepoPicker, setUseRepoPicker] = useState(true);
 
   const pollProject = async (projectId: string) => {
     try {
@@ -178,16 +180,35 @@ export default function Home() {
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="repo-url">GitHub Repository URL</Label>
-                  <Input
-                    id="repo-url"
-                    type="url"
-                    placeholder="https://github.com/username/repo"
-                    value={repoUrl}
-                    onChange={(e) => setRepoUrl(e.target.value)}
-                    required
-                    disabled={isSubmitting}
-                  />
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="repo-url">GitHub Repository URL</Label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setUseRepoPicker(!useRepoPicker)}
+                      disabled={isSubmitting}
+                    >
+                      {useRepoPicker ? "Enter manually" : "Pick from GitHub"}
+                    </Button>
+                  </div>
+                  {useRepoPicker ? (
+                    <GitHubRepoPicker
+                      value={repoUrl}
+                      onSelect={setRepoUrl}
+                      disabled={isSubmitting}
+                    />
+                  ) : (
+                    <Input
+                      id="repo-url"
+                      type="url"
+                      placeholder="https://github.com/username/repo"
+                      value={repoUrl}
+                      onChange={(e) => setRepoUrl(e.target.value)}
+                      required
+                      disabled={isSubmitting}
+                    />
+                  )}
                 </div>
 
                 <div className="space-y-2">
