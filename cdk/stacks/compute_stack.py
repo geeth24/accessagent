@@ -132,7 +132,17 @@ class ComputeStack(Stack):
             function_name="accessagent-scan",
             runtime=lambda_.Runtime.NODEJS_18_X,
             handler="index.handler",
-            code=lambda_.Code.from_asset("../backend/lambdas/scan"),
+            code=lambda_.Code.from_asset(
+                "../backend/lambdas/scan",
+                bundling=lambda_.BundlingOptions(
+                    image=lambda_.Runtime.NODEJS_18_X.bundling_image,
+                    command=[
+                        "bash", "-c",
+                        "npm install && cp -r . /asset-output/"
+                    ],
+                    user="root"
+                )
+            ),
             role=lambda_role,
             timeout=Duration.minutes(5),
             memory_size=2048,
