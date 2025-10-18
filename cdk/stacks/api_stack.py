@@ -18,7 +18,7 @@ class ApiStack(Stack):
         **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
-        
+
         # Custom domain - hardcoded to always use api.accessagent.geeth.app
         custom_domain_name = "api.accessagent.geeth.app"
 
@@ -42,25 +42,24 @@ class ApiStack(Stack):
             compute_stack.agent_orchestrator,
             proxy=True,
         )
-        
+
         # POST /scan - start a new scan
         scan_resource = self.api.root.add_resource("scan")
         scan_resource.add_method("POST", orchestrator_integration)
-        
+
         # GET /project/{project_id} - get project status
         project_resource = self.api.root.add_resource("project")
         project_detail_resource = project_resource.add_resource("{project_id}")
         project_detail_resource.add_method("GET", orchestrator_integration)
 
         # Custom domain setup - ALWAYS configured
-        # Create certificate with DNS validation
-        certificate = acm.Certificate(
+        # Use existing wildcard certificate for *.accessagent.geeth.app
+        certificate = acm.Certificate.from_certificate_arn(
             self,
             "ApiCertificate",
-            domain_name=custom_domain_name,
-            validation=acm.CertificateValidation.from_dns()
+            certificate_arn="arn:aws:acm:us-east-1:081762640508:certificate/ace8e5b5-1775-476b-924a-8cb5ea47b524"
         )
-        
+
         # Add custom domain to API Gateway
         domain = self.api.add_domain_name(
             "CustomDomain",
@@ -69,7 +68,7 @@ class ApiStack(Stack):
             endpoint_type=apigateway.EndpointType.EDGE,
             security_policy=apigateway.SecurityPolicy.TLS_1_2
         )
-        
+
         # Output the CloudFront domain to create CNAME in external DNS
         CfnOutput(
             self,
@@ -77,7 +76,7 @@ class ApiStack(Stack):
             value=domain.domain_name_alias_domain_name,
             description=f"Add CNAME: {custom_domain_name} -> <this value> in your DNS"
         )
-        
+
         CfnOutput(
             self,
             "CustomDomainUrl",
@@ -99,4 +98,3 @@ class ApiStack(Stack):
             value=self.api.rest_api_id,
             export_name="AccessAgentApiId"
         )
-
