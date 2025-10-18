@@ -48,7 +48,19 @@ class AgentCoreFixer:
                             {
                                 "toolSpec": {
                                     "name": "codeInterpreter",
-                                    "description": "Execute Python code to analyze files and generate fixes. Use this to read files, analyze accessibility issues, and create fixed versions."
+                                    "description": "Execute Python code to analyze files and generate fixes. Use this to read files, analyze accessibility issues, and create fixed versions.",
+                                    "inputSchema": {
+                                        "json": {
+                                            "type": "object",
+                                            "properties": {
+                                                "code": {
+                                                    "type": "string",
+                                                    "description": "Python code to execute"
+                                                }
+                                            },
+                                            "required": ["code"]
+                                        }
+                                    }
                                 }
                             }
                         ]
