@@ -1,0 +1,5 @@
+boto3>=1.28.0
+requests>=2.31.0
+playwright>=1.40.0
+axe-playwright-python>=0.1.0
+
