@@ -149,7 +149,8 @@ def handle_get_repos(event):
         
         secrets_client = boto3.client("secretsmanager")
         secret_response = secrets_client.get_secret_value(SecretId=secret_name)
-        github_token = secret_response["SecretString"]
+        secret_data = json.loads(secret_response["SecretString"])
+        github_token = secret_data.get("token", "")
         
         # Fetch repos from GitHub API
         req = urllib.request.Request(
