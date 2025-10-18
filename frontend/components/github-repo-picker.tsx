@@ -84,10 +84,10 @@ export function GitHubRepoPicker({ value, onSelect, disabled }: GitHubRepoPicker
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-full p-0" align="start">
-        <Command>
+      <PopoverContent className="w-[600px] p-0" align="start">
+        <Command shouldFilter={true}>
           <CommandInput placeholder="Search repositories..." />
-          <CommandList>
+          <CommandList className="max-h-[400px]">
             {loading ? (
               <div className="flex items-center justify-center py-6">
                 <Loader2 className="h-4 w-4 animate-spin" />

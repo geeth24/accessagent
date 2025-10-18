@@ -152,18 +152,34 @@ def handle_get_repos(event):
         secret_data = json.loads(secret_response["SecretString"])
         github_token = secret_data.get("token", "")
         
-        # Fetch repos from GitHub API
-        req = urllib.request.Request(
-            "https://api.github.com/user/repos?sort=updated&per_page=100",
-            headers={
-                "Authorization": f"Bearer {github_token}",
-                "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "AccessAgent"
-            }
-        )
+        # Fetch repos from GitHub API with pagination
+        all_repos = []
+        page = 1
+        per_page = 100
         
-        with urllib.request.urlopen(req) as response:
-            repos = json.loads(response.read().decode('utf-8'))
+        while True:
+            req = urllib.request.Request(
+                f"https://api.github.com/user/repos?sort=updated&per_page={per_page}&page={page}",
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github.v3+json",
+                    "User-Agent": "AccessAgent"
+                }
+            )
+            
+            with urllib.request.urlopen(req) as response:
+                repos = json.loads(response.read().decode('utf-8'))
+                
+            if not repos:
+                break
+                
+            all_repos.extend(repos)
+            
+            # Stop after 3 pages (300 repos) to avoid timeout
+            if page >= 3 or len(repos) < per_page:
+                break
+                
+            page += 1
             
         # Return simplified repo data
         simplified_repos = [
@@ -174,7 +190,7 @@ def handle_get_repos(event):
                 "html_url": repo["html_url"],
                 "description": repo.get("description")
             }
-            for repo in repos
+            for repo in all_repos
         ]
         
         return {
