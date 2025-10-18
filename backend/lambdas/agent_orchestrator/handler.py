@@ -146,7 +146,13 @@ def lambda_handler(event, context):
     try:
         http_method = event.get("httpMethod", "POST")
         
-        if http_method == "GET":
+        if http_method == "OPTIONS":
+            return {
+                "statusCode": 200,
+                "headers": CORS_HEADERS,
+                "body": json.dumps({"message": "OK"})
+            }
+        elif http_method == "GET":
             return handle_get_project(event)
         elif http_method == "POST":
             return handle_start_scan(event, context)
