@@ -40,20 +40,15 @@ export function GitHubRepoPicker({ value, onSelect, disabled }: GitHubRepoPicker
 
   useEffect(() => {
     const fetchRepos = async () => {
-      const token = process.env.NEXT_PUBLIC_GITHUB_TOKEN;
-      if (!token) {
-        setError("GitHub token not configured");
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+      if (!apiUrl) {
+        setError("API URL not configured");
         return;
       }
 
       setLoading(true);
       try {
-        const response = await fetch("https://api.github.com/user/repos?sort=updated&per_page=100", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: "application/vnd.github.v3+json",
-          },
-        });
+        const response = await fetch(`${apiUrl}/repos`);
 
         if (!response.ok) {
           throw new Error("Failed to fetch repositories");

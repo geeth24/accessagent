@@ -8,6 +8,7 @@ import logging
 import os
 import uuid
 import boto3
+import urllib.request
 from datetime import datetime
 from bedrock_agent import BedrockAgent
 
@@ -132,10 +133,74 @@ def handle_async_processing(event, context):
         return {"statusCode": 500, "error": str(e)}
 
 
+def handle_get_repos(event):
+    """
+    Handle GET request to fetch GitHub repositories
+    """
+    try:
+        # Fetch GitHub token from Secrets Manager
+        secret_name = os.environ.get("GITHUB_TOKEN_SECRET_NAME")
+        if not secret_name:
+            return {
+                "statusCode": 500,
+                "headers": CORS_HEADERS,
+                "body": json.dumps({"error": "GitHub token secret not configured"})
+            }
+        
+        secrets_client = boto3.client("secretsmanager")
+        secret_response = secrets_client.get_secret_value(SecretId=secret_name)
+        github_token = secret_response["SecretString"]
+        
+        # Fetch repos from GitHub API
+        req = urllib.request.Request(
+            "https://api.github.com/user/repos?sort=updated&per_page=100",
+            headers={
+                "Authorization": f"Bearer {github_token}",
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "AccessAgent"
+            }
+        )
+        
+        with urllib.request.urlopen(req) as response:
+            repos = json.loads(response.read().decode('utf-8'))
+            
+        # Return simplified repo data
+        simplified_repos = [
+            {
+                "id": repo["id"],
+                "name": repo["name"],
+                "full_name": repo["full_name"],
+                "html_url": repo["html_url"],
+                "description": repo.get("description")
+            }
+            for repo in repos
+        ]
+        
+        return {
+            "statusCode": 200,
+            "headers": CORS_HEADERS,
+            "body": json.dumps(simplified_repos)
+        }
+    except urllib.error.HTTPError as e:
+        logger.error(f"GitHub API error: {e.code} - {e.read().decode('utf-8')}")
+        return {
+            "statusCode": e.code,
+            "headers": CORS_HEADERS,
+            "body": json.dumps({"error": f"GitHub API error: {e.code}"})
+        }
+    except Exception as e:
+        logger.error(f"Error fetching repos: {str(e)}", exc_info=True)
+        return {
+            "statusCode": 500,
+            "headers": CORS_HEADERS,
+            "body": json.dumps({"error": str(e)})
+        }
+
+
 def lambda_handler(event, context):
     """
     Main Lambda handler for agent orchestration
-    Handles both POST (start new scan) and GET (retrieve project status)
+    Handles both POST (start new scan) and GET (retrieve project status/repos)
     """
     logger.info(f"Agent Orchestrator invoked with event: {json.dumps(event)[:500]}")
     
@@ -145,6 +210,7 @@ def lambda_handler(event, context):
     
     try:
         http_method = event.get("httpMethod", "POST")
+        path = event.get("path", "")
         
         if http_method == "OPTIONS":
             return {
@@ -153,7 +219,11 @@ def lambda_handler(event, context):
                 "body": json.dumps({"message": "OK"})
             }
         elif http_method == "GET":
-            return handle_get_project(event)
+            # Check path to determine which handler to use
+            if "/repos" in path:
+                return handle_get_repos(event)
+            else:
+                return handle_get_project(event)
         elif http_method == "POST":
             return handle_start_scan(event, context)
         else:

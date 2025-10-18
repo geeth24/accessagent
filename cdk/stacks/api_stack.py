@@ -52,6 +52,10 @@ class ApiStack(Stack):
         project_detail_resource = project_resource.add_resource("{project_id}")
         project_detail_resource.add_method("GET", orchestrator_integration)
 
+        # GET /repos - get user's GitHub repositories
+        repos_resource = self.api.root.add_resource("repos")
+        repos_resource.add_method("GET", orchestrator_integration)
+
         # Custom domain setup - ALWAYS configured
         # Use existing wildcard certificate for *.accessagent.geeth.app
         certificate = acm.Certificate.from_certificate_arn(
