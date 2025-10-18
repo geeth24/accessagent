@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Dict, List, Any
 import boto3
@@ -25,22 +26,22 @@ class AgenticFixer:
     5. If build fails: reads errors, fixes them, tries again
     6. Repeats until build passes
     """
-    
+
     def __init__(self, repo_path: str, issues: List[Dict], bedrock_client=None):
         self.repo_path = Path(repo_path)
         self.issues = issues
         self.bedrock_client = bedrock_client or boto3.client('bedrock-runtime', region_name='us-east-1')
         self.max_iterations = 5
-        self.model_id = "us.anthropic.claude-sonnet-4-20250514-v1:0"  # Sonnet 4 supports tool use
+        self.model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"  # Claude 3.5 Sonnet v2 with tool use
         self.mcp_explorer = MCPCodebaseExplorer(str(repo_path))
-        
+
     def get_codebase_context(self, max_files=30, max_size=5000) -> str:
         """
         Read key files from repo to give AI full context
         Searches recursively for all component files
         """
         logger.info(f"Reading codebase from {self.repo_path}")
-        
+
         # Comprehensive patterns for all common React/Next.js structures
         priority_patterns = [
             # Next.js TypeScript
@@ -67,40 +68,40 @@ class AgenticFixer:
             "src/**/*.css",
             "**/*.css",
         ]
-        
+
         files_content = []
         files_read = 0
-        
+
         for pattern in priority_patterns:
             if files_read >= max_files:
                 break
-                
+
             for file_path in self.repo_path.glob(pattern):
                 if files_read >= max_files:
                     break
-                    
+
                 try:
                     if file_path.stat().st_size > max_size:
                         continue
-                        
+
                     content = file_path.read_text(encoding='utf-8')
                     rel_path = file_path.relative_to(self.repo_path)
                     files_content.append(f"=== {rel_path} ===\n{content}\n")
                     files_read += 1
                     logger.info(f"  ✓ Read: {rel_path}")
-                    
+
                 except Exception as e:
                     logger.warning(f"Could not read {file_path}: {e}")
-        
+
         logger.info(f"Read {files_read} files total from codebase")
-        
+
         # Add file list at the start so AI knows what files exist
         file_list = "\n".join([f"- {f.relative_to(self.repo_path)}" for f in self.repo_path.rglob("*.jsx") if f.is_file()][:50])
         file_list += "\n" + "\n".join([f"- {f.relative_to(self.repo_path)}" for f in self.repo_path.rglob("*.js") if f.is_file()][:50])
         file_list += "\n" + "\n".join([f"- {f.relative_to(self.repo_path)}" for f in self.repo_path.rglob("*.tsx") if f.is_file()][:50])
-        
+
         return f"# AVAILABLE FILES IN REPO:\n{file_list}\n\n# FILE CONTENTS:\n" + "\n".join(files_content)
-    
+
     def get_mcp_tools(self) -> List[Dict]:
         """Define MCP tools that Claude can use"""
         return [
@@ -160,7 +161,7 @@ class AgenticFixer:
                 }
             }
         ]
-    
+
     def execute_tool(self, tool_name: str, tool_input: Dict) -> Any:
         """Execute an MCP tool and return the result"""
         try:
@@ -180,14 +181,14 @@ class AgenticFixer:
         except Exception as e:
             logger.error(f"Tool execution error: {e}")
             return {"error": str(e)}
-    
+
     def call_claude_with_tools(self, system_prompt: str, user_message: str, max_tool_rounds: int = 3) -> str:
         """
         Call Claude Sonnet with MCP tools support
         Allows Claude to iteratively explore the codebase
         """
         messages = [{"role": "user", "content": user_message}]
-        
+
         for round_num in range(max_tool_rounds):
             try:
                 request_body = {
@@ -198,29 +199,45 @@ class AgenticFixer:
                     "temperature": 0.1,
                     "tools": self.get_mcp_tools()
                 }
-                
-                response = self.bedrock_client.invoke_model(
-                    modelId=self.model_id,
-                    contentType="application/json",
-                    accept="application/json",
-                    body=json.dumps(request_body)
-                )
-                
+
+                # Retry with exponential backoff for throttling
+                max_retries = 3
+                base_delay = 2
+
+                for retry in range(max_retries):
+                    try:
+                        response = self.bedrock_client.invoke_model(
+                            modelId=self.model_id,
+                            contentType="application/json",
+                            accept="application/json",
+                            body=json.dumps(request_body),
+                        )
+                        break
+                    except Exception as e:
+                        if "ThrottlingException" in str(e) and retry < max_retries - 1:
+                            wait_time = base_delay * (2**retry)
+                            logger.warning(
+                                f"Throttled, waiting {wait_time}s before retry {retry + 1}/{max_retries}"
+                            )
+                            time.sleep(wait_time)
+                        else:
+                            raise
+
                 result = json.loads(response['body'].read())
-                
+
                 # Check stop reason
                 stop_reason = result.get('stop_reason')
-                
+
                 if stop_reason == 'tool_use':
                     # Claude wants to use tools
                     logger.info(f"Tool use round {round_num + 1}")
-                    
+
                     # Add assistant response to messages
                     messages.append({
                         "role": "assistant",
                         "content": result['content']
                     })
-                    
+
                     # Execute tools and add results
                     tool_results = []
                     for content_block in result['content']:
@@ -228,40 +245,40 @@ class AgenticFixer:
                             tool_name = content_block['name']
                             tool_input = content_block['input']
                             tool_use_id = content_block['id']
-                            
+
                             logger.info(f"Executing tool: {tool_name}({json.dumps(tool_input)[:100]}...)")
                             tool_result = self.execute_tool(tool_name, tool_input)
-                            
+
                             tool_results.append({
                                 "type": "tool_result",
                                 "tool_use_id": tool_use_id,
                                 "content": json.dumps(tool_result)
                             })
-                    
+
                     messages.append({
                         "role": "user",
                         "content": tool_results
                     })
-                    
+
                     # Continue loop to get next response
                     continue
-                    
+
                 else:
                     # Claude is done, return text response
                     text_content = ""
                     for content_block in result['content']:
                         if content_block.get('type') == 'text':
                             text_content += content_block['text']
-                    
+
                     return text_content
-                    
+
             except Exception as e:
                 logger.error(f"Bedrock API error: {e}")
                 raise
-        
+
         # Max rounds reached, return what we have
         return "Max tool rounds reached"
-    
+
     def apply_ai_fixes(self, ai_response: str) -> int:
         """
         Parse AI response and apply file changes
@@ -274,49 +291,49 @@ class AgenticFixer:
                 ai_response = ai_response.split("```json")[1].split("```")[0]
             elif "```" in ai_response:
                 ai_response = ai_response.split("```")[1].split("```")[0]
-            
+
             edits = json.loads(ai_response.strip())
             modified_count = 0
-            
+
             for edit in edits:
                 file_path = self.repo_path / edit['file_path']
-                
+
                 if not file_path.exists():
                     logger.warning(f"File not found: {file_path}")
                     continue
-                
+
                 # Read current content
                 content = file_path.read_text(encoding='utf-8')
-                
+
                 # Apply each replacement
                 for replacement in edit.get('replacements', []):
                     old = replacement['old_line']
                     new = replacement['new_line']
-                    
+
                     if old in content:
                         content = content.replace(old, new, 1)
                         logger.info(f"✓ Applied fix to {edit['file_path']}: {replacement.get('reason', '')}")
                     else:
                         logger.warning(f"✗ Could not find: {old[:50]}... in {edit['file_path']}")
-                
+
                 # Write back
                 file_path.write_text(content, encoding='utf-8')
                 modified_count += 1
-            
+
             return modified_count
-            
+
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse AI response as JSON: {e}")
             logger.debug(f"AI response: {ai_response[:500]}")
             return 0
-    
+
     def build_project(self) -> Dict[str, Any]:
         """
         Run pnpm install && pnpm build
         Returns: {success: bool, output: str, error: str}
         """
         logger.info("Building project...")
-        
+
         try:
             # Install dependencies
             install_result = subprocess.run(
@@ -326,7 +343,7 @@ class AgenticFixer:
                 text=True,
                 timeout=300
             )
-            
+
             if install_result.returncode != 0:
                 return {
                     "success": False,
@@ -334,7 +351,7 @@ class AgenticFixer:
                     "output": install_result.stdout,
                     "error": install_result.stderr
                 }
-            
+
             # Build
             build_result = subprocess.run(
                 ["pnpm", "build"],
@@ -343,14 +360,14 @@ class AgenticFixer:
                 text=True,
                 timeout=600
             )
-            
+
             return {
                 "success": build_result.returncode == 0,
                 "stage": "build",
                 "output": build_result.stdout,
                 "error": build_result.stderr
             }
-            
+
         except subprocess.TimeoutExpired:
             return {
                 "success": False,
@@ -363,7 +380,7 @@ class AgenticFixer:
                 "stage": "exception",
                 "error": str(e)
             }
-    
+
     def run_fix_loop(self) -> Dict[str, Any]:
         """
         Main agentic loop:
@@ -375,10 +392,10 @@ class AgenticFixer:
         6. Repeat until build passes or max iterations
         """
         logger.info(f"Starting agentic fix loop for {len(self.issues)} issues")
-        
+
         # Get full codebase
         codebase_context = self.get_codebase_context()
-        
+
         system_prompt = """You are an expert accessibility engineer with MCP tool access to explore codebases.
 
 **Your approach (like Cursor/Claude):**
@@ -416,14 +433,14 @@ class AgenticFixer:
     ]
   }
 ]"""
-        
+
         iteration = 0
         build_errors = None
-        
+
         while iteration < self.max_iterations:
             iteration += 1
             logger.info(f"Iteration {iteration}/{self.max_iterations}")
-            
+
             # Build prompt
             if iteration == 1:
                 # First iteration: fix accessibility issues
@@ -445,22 +462,22 @@ Error output:
 
 The build failed. Use tools to explore the codebase and fix ONLY what's causing the build to fail.
 Start by reading the files mentioned in the error."""
-            
+
             # Get AI response with tool use
             logger.info("Calling Claude with MCP tools...")
             ai_response = self.call_claude_with_tools(system_prompt, user_message, max_tool_rounds=5)
-            
+
             # Apply fixes
             modified_count = self.apply_ai_fixes(ai_response)
             logger.info(f"Modified {modified_count} files")
-            
+
             if modified_count == 0:
                 logger.warning("AI made no changes")
                 break
-            
+
             # Build
             build_result = self.build_project()
-            
+
             if build_result['success']:
                 logger.info(f"✓ Build passed on iteration {iteration}!")
                 return {
@@ -472,7 +489,7 @@ Start by reading the files mentioned in the error."""
                 logger.warning(f"✗ Build failed on iteration {iteration}")
                 build_errors = build_result
                 # Loop continues...
-        
+
         # Max iterations reached
         return {
             "success": False,
@@ -480,4 +497,3 @@ Start by reading the files mentioned in the error."""
             "error": "Max iterations reached, build still failing",
             "last_build_error": build_errors
         }
-

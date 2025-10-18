@@ -65,7 +65,7 @@ class ComputeStack(Stack):
                 resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:accessagent-*"],
             )
         )
-        
+
         # Add ECS permissions for agent orchestrator to trigger Fargate tasks
         if fargate_stack:
             lambda_role.add_to_policy(
@@ -104,7 +104,7 @@ class ComputeStack(Stack):
             "S3_BUCKET": storage_stack.reports_bucket.bucket_name,
             "GITHUB_TOKEN_SECRET_NAME": self.github_token_secret.secret_name,
         }
-        
+
         # Add Fargate environment variables if available
         if fargate_stack:
             common_environment["ECS_CLUSTER"] = fargate_stack.cluster.cluster_name
@@ -137,12 +137,9 @@ class ComputeStack(Stack):
                 "../backend/lambdas/scan",
                 bundling=BundlingOptions(
                     image=lambda_.Runtime.NODEJS_18_X.bundling_image,
-                    command=[
-                        "bash", "-c",
-                        "npm install && cp -r . /asset-output/"
-                    ],
-                    user="root"
-                )
+                    command=["bash", "-c", "npm install && cp -r . /asset-output/"],
+                    user="root",
+                ),
             ),
             role=lambda_role,
             timeout=Duration.minutes(5),
@@ -160,11 +157,10 @@ class ComputeStack(Stack):
             value=self.agent_orchestrator.function_arn,
             export_name="AccessAgentAgentOrchestratorArn"
         )
-        
+
         CfnOutput(
             self,
             "ScanFunctionArn",
             value=self.scan_function.function_arn,
             export_name="AccessAgentScanFunctionArn"
         )
-
