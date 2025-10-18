@@ -1,11 +1,14 @@
-import AWS from 'aws-sdk';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
 import lighthouse from 'lighthouse';
 import { URL } from 'url';
 
-const s3 = new AWS.S3();
-const dynamodb = new AWS.DynamoDB.DocumentClient();
+const s3Client = new S3Client({});
+const ddbClient = new DynamoDBClient({});
+const dynamodb = DynamoDBDocumentClient.from(ddbClient);
 
 const REPORTS_BUCKET = process.env.REPORTS_BUCKET;
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE;
@@ -90,12 +93,12 @@ export const handler = async (event) => {
         };
 
         const reportKey = `${project_id}/initial_scan.json`;
-        await s3.putObject({
+        await s3Client.send(new PutObjectCommand({
             Bucket: REPORTS_BUCKET,
             Key: reportKey,
             Body: JSON.stringify(report),
             ContentType: 'application/json'
-        }).promise();
+        }));
 
         console.log(`Scan complete. Score: ${auditResult.score}, Issues: ${auditResult.issues.length}`);
 
