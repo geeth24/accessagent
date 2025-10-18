@@ -19,9 +19,8 @@ class ApiStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
         
-        # Custom domain configuration (optional)
-        # Set API_DOMAIN_NAME=accessagent-api.geeth.app to enable
-        custom_domain_name = os.environ.get("API_DOMAIN_NAME")
+        # Custom domain - hardcoded to always use api.accessagent.geeth.app
+        custom_domain_name = "api.accessagent.geeth.app"
 
         self.api = apigateway.RestApi(
             self,
@@ -53,51 +52,39 @@ class ApiStack(Stack):
         project_detail_resource = project_resource.add_resource("{project_id}")
         project_detail_resource.add_method("GET", orchestrator_integration)
 
-        # Custom domain setup (if configured)
-        if custom_domain_name:
-            # Use existing ACM certificate (arn can be provided via env var)
-            cert_arn = os.environ.get("ACM_CERTIFICATE_ARN")
-            
-            if cert_arn:
-                # Import existing certificate
-                certificate = acm.Certificate.from_certificate_arn(
-                    self,
-                    "ApiCertificate",
-                    cert_arn
-                )
-            else:
-                # Create new certificate (requires DNS validation)
-                certificate = acm.Certificate(
-                    self,
-                    "ApiCertificate",
-                    domain_name=custom_domain_name,
-                    validation=acm.CertificateValidation.from_dns()
-                )
-            
-            # Add custom domain to API Gateway
-            domain = self.api.add_domain_name(
-                "CustomDomain",
-                domain_name=custom_domain_name,
-                certificate=certificate,
-                endpoint_type=apigateway.EndpointType.EDGE,
-                security_policy=apigateway.SecurityPolicy.TLS_1_2
-            )
-            
-            # Output the CloudFront domain to create CNAME in external DNS
-            CfnOutput(
-                self,
-                "CustomDomainTarget",
-                value=domain.domain_name_alias_domain_name,
-                description=f"Add CNAME: {custom_domain_name} -> <this value> in your DNS"
-            )
-            
-            CfnOutput(
-                self,
-                "CustomDomainUrl",
-                value=f"https://{custom_domain_name}",
-                export_name="AccessAgentCustomDomainUrl",
-                description="Custom domain URL for AccessAgent API"
-            )
+        # Custom domain setup - ALWAYS configured
+        # Create certificate with DNS validation
+        certificate = acm.Certificate(
+            self,
+            "ApiCertificate",
+            domain_name=custom_domain_name,
+            validation=acm.CertificateValidation.from_dns()
+        )
+        
+        # Add custom domain to API Gateway
+        domain = self.api.add_domain_name(
+            "CustomDomain",
+            domain_name=custom_domain_name,
+            certificate=certificate,
+            endpoint_type=apigateway.EndpointType.EDGE,
+            security_policy=apigateway.SecurityPolicy.TLS_1_2
+        )
+        
+        # Output the CloudFront domain to create CNAME in external DNS
+        CfnOutput(
+            self,
+            "CustomDomainTarget",
+            value=domain.domain_name_alias_domain_name,
+            description=f"Add CNAME: {custom_domain_name} -> <this value> in your DNS"
+        )
+        
+        CfnOutput(
+            self,
+            "CustomDomainUrl",
+            value=f"https://{custom_domain_name}",
+            export_name="AccessAgentCustomDomainUrl",
+            description="Custom domain URL for AccessAgent API"
+        )
 
         CfnOutput(
             self,
