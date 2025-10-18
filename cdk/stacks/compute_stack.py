@@ -1,6 +1,7 @@
 from aws_cdk import (
     Stack,
     Duration,
+    BundlingOptions,
     aws_lambda as lambda_,
     aws_iam as iam,
     aws_secretsmanager as secretsmanager,
@@ -134,7 +135,7 @@ class ComputeStack(Stack):
             handler="index.handler",
             code=lambda_.Code.from_asset(
                 "../backend/lambdas/scan",
-                bundling=lambda_.BundlingOptions(
+                bundling=BundlingOptions(
                     image=lambda_.Runtime.NODEJS_18_X.bundling_image,
                     command=[
                         "bash", "-c",
