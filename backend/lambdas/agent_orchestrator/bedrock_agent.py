@@ -200,8 +200,11 @@ class BedrockAgent:
     
     def _generate_patch_locally(self, tool_input: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generate complete file contents using Bedrock reasoning
-        Fetches actual file contents and asks AI to generate corrected versions
+        Generate initial patch context using Bedrock reasoning
+        Fetches sample file contents to provide context
+        
+        Note: Fargate agent has full MCP access for deep iterative exploration
+        This Lambda function just provides initial context and orchestrates
         """
         issues = tool_input.get("issues", [])
         repo_url = tool_input.get("repo_url", "")
@@ -261,7 +264,7 @@ class BedrockAgent:
         
         # Sort by priority and fetch top files
         candidate_files.sort(key=lambda x: x[1], reverse=True)
-        web_files = [f[0] for f in candidate_files[:10]]  # Fetch top 10 files
+        web_files = [f[0] for f in candidate_files[:20]]  # Fetch top 20 files for initial context
         
         logger.info(f"Prioritized files to fetch: {web_files}")
         

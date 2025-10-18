@@ -2,6 +2,7 @@
 Agentic Build-Fix Loop
 AI agent runs inside Fargate with full codebase access
 Makes fixes iteratively until build passes
+Uses MCP-like tools for iterative exploration
 """
 import json
 import logging
@@ -10,6 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Any
 import boto3
+from mcp_explorer import MCPCodebaseExplorer
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,8 @@ class AgenticFixer:
         self.issues = issues
         self.bedrock_client = bedrock_client or boto3.client('bedrock-runtime', region_name='us-east-1')
         self.max_iterations = 5
-        self.model_id = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+        self.model_id = "us.anthropic.claude-sonnet-4-20250514-v1:0"  # Sonnet 4 supports tool use
+        self.mcp_explorer = MCPCodebaseExplorer(str(repo_path))
         
     def get_codebase_context(self, max_files=30, max_size=5000) -> str:
         """
@@ -98,33 +101,166 @@ class AgenticFixer:
         
         return f"# AVAILABLE FILES IN REPO:\n{file_list}\n\n# FILE CONTENTS:\n" + "\n".join(files_content)
     
-    def call_claude(self, system_prompt: str, user_message: str) -> str:
-        """
-        Call Claude Sonnet to analyze and generate fixes
-        """
+    def get_mcp_tools(self) -> List[Dict]:
+        """Define MCP tools that Claude can use"""
+        return [
+            {
+                "name": "list_files",
+                "description": "Search for files in the repository matching a glob pattern. Use to discover relevant files.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Glob pattern (e.g., '**/*.tsx' for all TypeScript React files)"
+                        }
+                    },
+                    "required": ["pattern"]
+                }
+            },
+            {
+                "name": "read_file",
+                "description": "Read the complete contents of a file. Use this to analyze code before making fixes.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to the file relative to repo root"
+                        }
+                    },
+                    "required": ["file_path"]
+                }
+            },
+            {
+                "name": "search_content",
+                "description": "Search for text patterns across files. Use to find where specific elements or classes are used.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Text pattern to search for"
+                        },
+                        "file_types": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "File extensions to search in (e.g., ['tsx', 'jsx'])"
+                        }
+                    },
+                    "required": ["pattern"]
+                }
+            },
+            {
+                "name": "get_package_info",
+                "description": "Get framework and dependency information from package.json",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        ]
+    
+    def execute_tool(self, tool_name: str, tool_input: Dict) -> Any:
+        """Execute an MCP tool and return the result"""
         try:
-            response = self.bedrock_client.invoke_model(
-                modelId=self.model_id,
-                contentType="application/json",
-                accept="application/json",
-                body=json.dumps({
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 4096,
-                    "system": system_prompt,
-                    "messages": [{
-                        "role": "user",
-                        "content": user_message
-                    }],
-                    "temperature": 0.1
-                })
-            )
-            
-            result = json.loads(response['body'].read())
-            return result['content'][0]['text']
-            
+            if tool_name == "list_files":
+                return self.mcp_explorer.list_files(tool_input.get("pattern", "*"))
+            elif tool_name == "read_file":
+                return self.mcp_explorer.read_file(tool_input["file_path"])
+            elif tool_name == "search_content":
+                return self.mcp_explorer.search_content(
+                    tool_input["pattern"],
+                    tool_input.get("file_types")
+                )
+            elif tool_name == "get_package_info":
+                return self.mcp_explorer.get_package_info()
+            else:
+                return {"error": f"Unknown tool: {tool_name}"}
         except Exception as e:
-            logger.error(f"Bedrock API error: {e}")
-            raise
+            logger.error(f"Tool execution error: {e}")
+            return {"error": str(e)}
+    
+    def call_claude_with_tools(self, system_prompt: str, user_message: str, max_tool_rounds: int = 3) -> str:
+        """
+        Call Claude Sonnet with MCP tools support
+        Allows Claude to iteratively explore the codebase
+        """
+        messages = [{"role": "user", "content": user_message}]
+        
+        for round_num in range(max_tool_rounds):
+            try:
+                request_body = {
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 8192,
+                    "system": system_prompt,
+                    "messages": messages,
+                    "temperature": 0.1,
+                    "tools": self.get_mcp_tools()
+                }
+                
+                response = self.bedrock_client.invoke_model(
+                    modelId=self.model_id,
+                    contentType="application/json",
+                    accept="application/json",
+                    body=json.dumps(request_body)
+                )
+                
+                result = json.loads(response['body'].read())
+                
+                # Check stop reason
+                stop_reason = result.get('stop_reason')
+                
+                if stop_reason == 'tool_use':
+                    # Claude wants to use tools
+                    logger.info(f"Tool use round {round_num + 1}")
+                    
+                    # Add assistant response to messages
+                    messages.append({
+                        "role": "assistant",
+                        "content": result['content']
+                    })
+                    
+                    # Execute tools and add results
+                    tool_results = []
+                    for content_block in result['content']:
+                        if content_block.get('type') == 'tool_use':
+                            tool_name = content_block['name']
+                            tool_input = content_block['input']
+                            tool_use_id = content_block['id']
+                            
+                            logger.info(f"Executing tool: {tool_name}({json.dumps(tool_input)[:100]}...)")
+                            tool_result = self.execute_tool(tool_name, tool_input)
+                            
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": json.dumps(tool_result)
+                            })
+                    
+                    messages.append({
+                        "role": "user",
+                        "content": tool_results
+                    })
+                    
+                    # Continue loop to get next response
+                    continue
+                    
+                else:
+                    # Claude is done, return text response
+                    text_content = ""
+                    for content_block in result['content']:
+                        if content_block.get('type') == 'text':
+                            text_content += content_block['text']
+                    
+                    return text_content
+                    
+            except Exception as e:
+                logger.error(f"Bedrock API error: {e}")
+                raise
+        
+        # Max rounds reached, return what we have
+        return "Max tool rounds reached"
     
     def apply_ai_fixes(self, ai_response: str) -> int:
         """
@@ -243,18 +379,31 @@ class AgenticFixer:
         # Get full codebase
         codebase_context = self.get_codebase_context()
         
-        system_prompt = """You are an expert accessibility engineer.
-You have full access to a codebase and must fix accessibility violations.
+        system_prompt = """You are an expert accessibility engineer with MCP tool access to explore codebases.
 
-CRITICAL RULES:
-1. Read the ENTIRE codebase context provided
-2. Make MINIMAL changes - only fix accessibility issues
-3. DO NOT refactor, reformat, or add comments
-4. DO NOT change build configuration or dependencies
-5. Output ONLY valid JSON with your changes
-6. Use SHORT substrings (15-40 chars) that uniquely identify lines
+**Your approach (like Cursor/Claude):**
+1. Use get_package_info() to understand the framework
+2. Use list_files() to discover relevant files
+3. Use read_file() to analyze specific files mentioned in issues
+4. Use search_content() to find where specific elements are used
+5. Make MINIMAL fixes to only what's needed
 
-Output format:
+**Available tools:**
+- list_files(pattern) - Find files matching glob pattern
+- read_file(file_path) - Read complete file contents
+- search_content(pattern, file_types) - Search for text in files
+- get_package_info() - Get framework and dependencies
+
+**CRITICAL RULES:**
+1. Start by exploring the codebase with tools
+2. Read actual files before making changes
+3. Make MINIMAL changes - only fix accessibility issues
+4. DO NOT refactor, reformat, or add comments
+5. DO NOT change build configuration or dependencies
+6. Output ONLY valid JSON with your changes
+7. Use SHORT substrings (15-40 chars) that uniquely identify lines
+
+**Output format (after exploration):**
 [
   {
     "file_path": "src/components/Button.tsx",
@@ -278,28 +427,28 @@ Output format:
             # Build prompt
             if iteration == 1:
                 # First iteration: fix accessibility issues
-                user_message = f"""# CODEBASE
-{codebase_context}
+                user_message = f"""# ACCESSIBILITY ISSUES TO FIX
+{json.dumps(self.issues[:20], indent=2)}
 
-# ACCESSIBILITY ISSUES TO FIX
-{json.dumps(self.issues[:10], indent=2)}
+**Your task:**
+1. First, explore the codebase using tools (get_package_info, list_files, read_file)
+2. Identify which files need changes to fix these issues
+3. Read those files with read_file()
+4. Output JSON with your fixes
 
-Analyze the code and fix these accessibility issues with minimal changes.
-Output JSON with your fixes."""
+Start by calling get_package_info() to understand the project structure."""
             else:
                 # Subsequent iterations: fix build errors
                 user_message = f"""# PREVIOUS BUILD FAILED
 Error output:
 {build_errors['error'][:2000]}
 
-{codebase_context}
-
-The build failed. Read the error carefully and fix ONLY what's causing the build to fail.
-Output JSON with your fixes."""
+The build failed. Use tools to explore the codebase and fix ONLY what's causing the build to fail.
+Start by reading the files mentioned in the error."""
             
-            # Get AI response
-            logger.info("Calling Claude for fixes...")
-            ai_response = self.call_claude(system_prompt, user_message)
+            # Get AI response with tool use
+            logger.info("Calling Claude with MCP tools...")
+            ai_response = self.call_claude_with_tools(system_prompt, user_message, max_tool_rounds=5)
             
             # Apply fixes
             modified_count = self.apply_ai_fixes(ai_response)
